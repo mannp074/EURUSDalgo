@@ -113,5 +113,3 @@ def webhook():
 app.run(port=5000)
 
 
-The full indicator script is inside this repository:
-
