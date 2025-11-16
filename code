@@ -1,0 +1,69 @@
+//@version=5
+indicator("EURUSDi", overlay=true, dynamic_requests=true)
+
+// ===== USER INPUTS =====
+i_license_id   = input.string("YOUR_LICENSE_ID", title="PineConnector License ID")
+i_risk_usd     = input.float(50.0, "Risk per Trade (USD)")
+i_tp_multiple  = input.float(2.0, "Take Profit Multiple")
+i_range_hour   = input.int(18, "Range Candle Hour (IST 24h)", minval=0, maxval=23)
+i_range_min    = input.int(45, "Range Candle Minute (IST)", minval=0, maxval=59, step=15)
+i_line_color   = input.color(color.gray, "Range Line Color")
+i_line_width   = input.int(2, "Range Line Width", minval=1)
+
+// ===== VARIABLES =====
+var float range_high   = na
+var float range_low    = na
+var bool  trade_taken  = false
+var bool  range_locked = false  // lock the range after the M15 candle closes
+
+string ist_timezone = "Asia/Kolkata"
+
+// ===== REQUEST M15 DATA =====
+[high_15m, low_15m, m15_closed, time_15m] = request.security(syminfo.tickerid, "15", [high, low, barstate.isconfirmed, time], lookahead=barmerge.lookahead_off)
+
+// ===== REQUEST M5 DATA (use M5 open/close for breakout & distance) =====
+[open_5m, close_5m, time_5m] = request.security(syminfo.tickerid, "5", [open, close, time], lookahead=barmerge.lookahead_off)
+
+// ===== CAPTURE RANGE ONLY AFTER M15 CANDLE CLOSES =====
+if m15_closed and hour(time_15m, ist_timezone) == i_range_hour and minute(time_15m, ist_timezone) == i_range_min
+    range_high := high_15m
+    range_low  := low_15m
+    trade_taken := false
+    range_locked := true  // range is now locked
+
+// ===== ENTRY & ALERT LOGIC =====
+// Only check for breakout when range is locked and not yet traded
+if range_locked and not na(range_high) and not trade_taken
+    bool long_condition  = close_5m > range_high and open_5m <= range_high
+    bool short_condition = close_5m < range_low  and open_5m >= range_low
+
+    if long_condition or short_condition
+        trade_taken := true
+
+        // --- RISK in PRICE UNITS: include range size + distance of M5 close beyond boundary ---
+        float risk_in_price = long_condition ? (close_5m - range_low) : (range_high - close_5m)
+
+        // Safety fallback (shouldn't be needed if conditions are correct)
+        if risk_in_price <= 0
+            risk_in_price := range_high - range_low
+
+        // pip size (JPY handling)
+        string base_symbol = syminfo.ticker
+        string symbol_name = base_symbol + ".x"
+        float pip_size = str.contains(str.upper(base_symbol), "JPY") ? 0.01 : 0.0001
+
+        float risk_in_pips = risk_in_price / pip_size
+        float tp_in_pips   = risk_in_pips * i_tp_multiple
+
+        string direction = long_condition ? "buy" : "sell"
+        // keep sl/tp as pips (compatible with your connector). Optionally send SL/TP price levels too.
+        string message = i_license_id + "," + direction + "," + symbol_name +
+                         ",risk=" + str.tostring(i_risk_usd) +
+                         ",sl=" + str.tostring(risk_in_pips) +
+                         ",tp=" + str.tostring(tp_in_pips)
+
+        alert(message, alert.freq_once_per_bar_close)
+
+// ===== PLOTTING RANGE LINES ONLY AFTER RANGE IS LOCKED =====
+plot(range_locked ? range_high : na, "Range High", i_line_color, i_line_width, plot.style_linebr)
+plot(range_locked ? range_low  : na, "Range Low",  i_line_color, i_line_width, plot.style_linebr)
